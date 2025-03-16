@@ -53,8 +53,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Set your Alpaca API credentials
-API_KEY = 'PK5K5WNB8QPSATC3GVLB'
-SECRET_KEY = 'GCeYxJenpWlwSZwzBm2Cj7uBYOYYSt04vm1QHdo1'
+API_KEY = "PK25YZNBYBYX0XQJNK5A"
+SECRET_KEY ="CfZx1CtNITOdYKpwxVYCec02k6WBT0EJBYSS5WgZ"
 
 HEADERS = {
     "Apca-Api-Key-Id": API_KEY,
