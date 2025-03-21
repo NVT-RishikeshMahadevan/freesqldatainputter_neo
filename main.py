@@ -2,8 +2,9 @@ import streamlit as st
 import requests
 import time
 from datetime import datetime, timedelta
-import mysql.connector
+import psycopg2
 import pandas as pd
+from psycopg2.extras import DictCursor
 
 # Set page configuration for better layout
 st.set_page_config(
@@ -61,39 +62,33 @@ HEADERS = {
     "Apca-Api-Secret-Key": SECRET_KEY
 }
 
-# Database configuration
-DB_CONFIG = {
-    'host': 'sql5.freesqldatabase.com',
-    'database': 'sql5767357',
-    'user': 'sql5767357',
-    'password': 'tVwMEmS9Lm',
-    'port': 3306
-}
+# PostgreSQL Database connection string
+DB_CONNECTION_STRING = "postgres://avnadmin:AVNS_ocGSAsvNGErRw3wuQfi@pg-1146654f-sarabathshameer-68f6.c.aivencloud.com:26874/defaultdb?sslmode=require"
 
 # Function to initialize database (create table if not exists)
 def initialize_database():
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = psycopg2.connect(DB_CONNECTION_STRING)
         cursor = conn.cursor()
         
         # Create crypto_prices table if it doesn't exist
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS crypto_prices (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             symbol VARCHAR(20) NOT NULL,
-            bid_price DECIMAL(20, 8) NOT NULL,
-            ask_price DECIMAL(20, 8) NOT NULL,
-            last_trade_price DECIMAL(20, 8) NOT NULL,
-            timestamp DATETIME NOT NULL
+            bid_price NUMERIC(20, 8) NOT NULL,
+            ask_price NUMERIC(20, 8) NOT NULL,
+            last_trade_price NUMERIC(20, 8) NOT NULL,
+            timestamp TIMESTAMP NOT NULL
         )
         ''')
         
         # Create sync_control table for coordinating updates
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS sync_control (
-            id INT PRIMARY KEY DEFAULT 1,
-            last_update DATETIME NOT NULL,
-            next_update DATETIME NOT NULL
+            id INTEGER PRIMARY KEY,
+            last_update TIMESTAMP NOT NULL,
+            next_update TIMESTAMP NOT NULL
         )
         ''')
         
@@ -102,9 +97,9 @@ def initialize_database():
         if cursor.fetchone()[0] == 0:
             next_update = datetime.now() + timedelta(seconds=30)
             cursor.execute('''
-            INSERT INTO sync_control (last_update, next_update)
-            VALUES (%s, %s)
-            ''', (datetime.now(), next_update))
+            INSERT INTO sync_control (id, last_update, next_update)
+            VALUES (%s, %s, %s)
+            ''', (1, datetime.now(), next_update))
         
         conn.commit()
         cursor.close()
@@ -117,8 +112,8 @@ def initialize_database():
 # Function to get sync timing information
 def get_sync_timing():
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
-        cursor = conn.cursor(dictionary=True)
+        conn = psycopg2.connect(DB_CONNECTION_STRING)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         
         cursor.execute('SELECT last_update, next_update FROM sync_control WHERE id = 1')
         result = cursor.fetchone()
@@ -134,7 +129,7 @@ def get_sync_timing():
 # Function to update sync timing
 def update_sync_timing(price_refresh_interval):
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = psycopg2.connect(DB_CONNECTION_STRING)
         cursor = conn.cursor()
         
         now = datetime.now()
@@ -157,7 +152,7 @@ def update_sync_timing(price_refresh_interval):
 # Function to add data to database
 def add_to_database(symbol, bid, ask, last_trade):
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = psycopg2.connect(DB_CONNECTION_STRING)
         cursor = conn.cursor()
         
         # Check current row count
@@ -166,7 +161,7 @@ def add_to_database(symbol, bid, ask, last_trade):
         
         # If we have 100 or more rows, delete the oldest 10
         if count >= 100:
-            cursor.execute("DELETE FROM crypto_prices ORDER BY timestamp ASC LIMIT 10")
+            cursor.execute("DELETE FROM crypto_prices WHERE id IN (SELECT id FROM crypto_prices ORDER BY timestamp ASC LIMIT 10)")
         
         # Insert new data
         cursor.execute('''
@@ -185,8 +180,8 @@ def add_to_database(symbol, bid, ask, last_trade):
 # Function to get data from database
 def get_database_data(limit=100):
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
-        cursor = conn.cursor(dictionary=True)
+        conn = psycopg2.connect(DB_CONNECTION_STRING)
+        cursor = conn.cursor(cursor_factory=DictCursor)
         
         cursor.execute('''
         SELECT * FROM crypto_prices 
@@ -293,20 +288,51 @@ while True:
                 db_update_counter = 0
                 
                 # Refresh database display
+                
+                
                 db_data = get_database_data()
                 if db_data:
                     df = pd.DataFrame(db_data)
+                    
+                
+                    
+                    # Convert column names to strings first, then lowercase
+                    df.columns = [str(col).lower() for col in df.columns]
+                    
                     # Format timestamp for better display
-                    df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    if 'timestamp' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    
                     # Format price columns
                     for col in ['bid_price', 'ask_price', 'last_trade_price']:
-                        df[col] = df[col].apply(lambda x: f"${float(x):,.2f}")
+                        if col in df.columns:
+                            df[col] = df[col].apply(lambda x: f"${float(x):,.2f}")
                     
-                    # Rename columns for better display
-                    df.columns = ['ID', 'Symbol', 'Bid Price', 'Ask Price', 'Last Trade', 'Timestamp']
+                    # Rename columns for better display - use actual column names from the database
+                    column_mapping = {
+                        '0': 'ID',
+                        '1': 'Symbol',
+                        '2': 'Bid Price',
+                        '3': 'Ask Price',
+                        '4': 'Last Trade',
+                        '5': 'Timestamp',
+                        # Also include the text versions in case they're returned as strings
+                        'id': 'ID',
+                        'symbol': 'Symbol',
+                        'bid_price': 'Bid Price',
+                        'ask_price': 'Ask Price',
+                        'last_trade_price': 'Last Trade',
+                        'timestamp': 'Timestamp'
+                    }
+                    
+                    # Only rename columns that exist
+                    valid_mapping = {k: v for k, v in column_mapping.items() if k in df.columns}
+                    df = df.rename(columns=valid_mapping)
+                    
                     db_data_placeholder.dataframe(df, use_container_width=True)
                 else:
                     db_data_placeholder.info("No data in database yet")
+                
         else:
             data_placeholder.error("Failed to retrieve data. Check API keys or network.")
         
